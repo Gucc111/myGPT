@@ -77,62 +77,6 @@ def split_dataset(data_path: str, split_ratio: float = 0.9) -> Tuple[list, list]
     return data[:i], data[i:]
 
 
-# def get_batch(
-#     batch_size: int,
-#     pad_id: int = 0,
-#     device: str = 'cpu'
-# ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-#     """
-#     基于 offsets 做句对 batch 采样与 padding。
-
-#     返回:
-#       src_tensor: (B, L_src_max), dtype=torch.long
-#       tgt_tensor: (B, L_tgt_max), dtype=torch.long
-#       src_mask:   (B, L_src_max), bool
-#       tgt_mask:   (B, L_tgt_max), bool
-#     """
-#     # 全局变量 memmap 和 offsets
-#     # 已加载：src, src_offsets, tgt, tgt_offsets, n_sent
-#     idx = np.random.randint(0, n_sent, size=batch_size)
-#     src_seqs = [src[src_offsets[i]:src_offsets[i+1]] for i in idx]
-#     tgt_seqs = [tgt[tgt_offsets[i]:tgt_offsets[i+1]] for i in idx]
-#     max_src_len = max(len(s) for s in src_seqs)
-#     max_tgt_len = max(len(t) for t in tgt_seqs)
-#     src_batch = np.full((batch_size, max_src_len), pad_id, dtype=np.int64)
-#     tgt_batch = np.full((batch_size, max_tgt_len), pad_id, dtype=np.int64)
-#     for j, s in enumerate(src_seqs):
-#         src_batch[j, :len(s)] = s
-#     for j, t in enumerate(tgt_seqs):
-#         tgt_batch[j, :len(t)] = t
-#     src_tensor = torch.from_numpy(src_batch).to(device)
-#     tgt_tensor = torch.from_numpy(tgt_batch).to(device)
-#     src_mask = src_tensor != pad_id
-#     tgt_mask = tgt_tensor != pad_id
-#     return src_tensor, tgt_tensor, src_mask, tgt_mask
-
-
-# def main() -> None:
-#     parser = argparse.ArgumentParser(description="Streaming BPE encode with download/extract support and get_batch demo")
-#     parser.add_argument('--download-url', type=str, help='下载并解压 ZIP 的 URL')
-#     parser.add_argument('--input', type=str, help='输入文本文件路径，每行一句')
-#     parser.add_argument('--output', type=str, help='输出 .bin 文件路径')
-#     parser.add_argument('--encoder', type=str, default='gpt2', help='tiktoken 编码器名称')
-#     args = parser.parse_args()
-
-#     if args.download_url:
-#         download_and_extract(args.download_url)
-#         return
-#     if not args.input or not args.output:
-#         parser.error("必须提供 --input, --output 或 --download-url")
-#     # 初始化 memmap & offsets
-#     global src, tgt, src_offsets, tgt_offsets, n_sent
-#     src = np.memmap(args.output if 'de.txt' in args.input else args.output.replace('eng', 'eng_train'), dtype=np.uint16, mode='r')
-#     src_offsets = np.load(args.output + '.offsets.npy')
-#     tgt = np.memmap(args.output.replace('eng', 'de'), dtype=np.uint16, mode='r')
-#     tgt_offsets = np.load(args.output.replace('eng', 'de') + '.offsets.npy')
-#     n_sent = len(src_offsets) - 1
-#     process_data(args.input, args.output, args.encoder)
-
 def main() -> None:
     url = 'https://object.pouta.csc.fi/OPUS-EuroPat/v3/moses/de-en.txt.zip'
     
@@ -155,6 +99,10 @@ def main() -> None:
         _, val_tokens = process_data(val_set, lang_name=lang, split='val')
         meta[lang + '_vocab_size'] = vocab_size
         print(f'{lang} has {train_tokens} train tokens and {val_tokens} val tokens.')
+    
+    meta['<bos>'] = vocab_size
+    meta['<eos>'] = vocab_size + 1
+    meta['<pad>'] = vocab_size + 2
     
     with open(os.path.join(base_path, 'meta.pkl'), 'wb') as f:
         pickle.dump(meta, f)
