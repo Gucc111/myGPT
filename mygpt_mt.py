@@ -9,8 +9,7 @@ from model import LayerNorm, GPT
 
 @dataclass
 class MyGPTConfig:
-    src_block_size: int = 512
-    tgt_block_size: int = 640
+    block_size: int = 640
     src_vocab_size: int = 50304 # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64 for efficiency
     tgt_vocab_size: int = 50304 # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64 for efficiency
     n_layer: int = 12
@@ -134,7 +133,7 @@ class Encoder(nn.Module):
     def __init__(self, config: MyGPTConfig) -> None:
         super().__init__()
         self.wte = nn.Embedding(config.src_vocab_size, config.n_embd)
-        self.wpe = nn.Embedding(config.src_block_size, config.n_embd)
+        self.wpe = nn.Embedding(config.block_size, config.n_embd)
         self.dropout = nn.Dropout(config.dropout)
         self.layer_stack = nn.ModuleList([Encoderlayer(config) for _ in range(config.n_layer)])
         self.config = config
@@ -142,7 +141,7 @@ class Encoder(nn.Module):
     def forward(self, src_seq: torch.Tensor, mask=None):
         # src_seq shape: (batch_size, src_len)
         src_len = src_seq.shape[1]
-        assert src_len <= self.config.src_block_size, f"Cannot forward sequence of length {src_len}, block size is only {self.config.src_block_size}"
+        assert src_len <= self.config.block_size, f"Cannot forward sequence of length {src_len}, block size is only {self.config.block_size}"
         device = src_seq.device
         src_pos = torch.arange(0, src_len, dtype=torch.long, device=device) # shape (src_len)
         
@@ -180,7 +179,7 @@ class Decoder(nn.Module):
     def __init__(self, config: MyGPTConfig) -> None:
         super().__init__()
         self.wte = nn.Embedding(config.tgt_vocab_size, config.n_embd)
-        self.wpe = nn.Embedding(config.tgt_block_size, config.n_embd)
+        self.wpe = nn.Embedding(config.block_size, config.n_embd)
         self.dropout = nn.Dropout(config.dropout)
         self.layer_stack = nn.ModuleList([Decoderlayer(config) for _ in range(config.n_layer)])
         self.config = config
@@ -188,7 +187,7 @@ class Decoder(nn.Module):
     def forward(self, tgt_seq: torch.Tensor, enc_output: torch.Tensor, self_mask=None, cross_mask=None):
         # tgt_seq shape: (batch_size, tgt_len)
         tgt_len = tgt_seq.shape[1]
-        assert tgt_len <= self.config.tgt_block_size, f"Cannot forward sequence of length {tgt_len}, block size is only {self.config.tgt_block_size}"
+        assert tgt_len <= self.config.block_size, f"Cannot forward sequence of length {tgt_len}, block size is only {self.config.block_size}"
         device = tgt_seq.device
         tgt_pos = torch.arange(0, tgt_len, dtype=torch.long, device=device) # shape (src_len)
         
@@ -287,11 +286,11 @@ class MyGPT(GPT):
 
         tgt_seq = torch.tensor([50257]).repeat(src_seq.shape[0], 1)
         # tgt_seq shape: (batch_size, 1)
-        finished = torch.zeros(src_seq.shape[0], dtype=torch.bool)
+        finished = torch.zeros((src_seq.shape[0], 1), dtype=torch.bool)
         # finished shape: (batch_size,)
         for _ in range(max_new_tokens):
             # if the sequence context is growing too long we must crop it at block_size
-            idx_cond = tgt_seq if tgt_seq.size(1) <= self.config.tgt_block_size else tgt_seq[:, -self.config.tgt_block_size:]
+            idx_cond = tgt_seq if tgt_seq.size(1) <= self.config.block_size else tgt_seq[:, -self.config.block_size:]
             # forward the model to get the logits for the index in the sequence
             tgt_mask = get_pad_mask(idx_cond, 50259) & get_subsequent_mask(idx_cond)
             dec_output = self.transformer.decoder(idx_cond, enc_output, self_mask=tgt_mask, cross_mask=src_mask)
@@ -312,10 +311,16 @@ class MyGPT(GPT):
             if finished.all():
                 break
         
-        return tgt_seq
+        return tgt_seq[:, 1:]
     
     def crop_block_size(self, block_size):
-        pass
+        # model surgery to decrease the block size if necessary
+        # e.g. we may load the GPT2 pretrained model checkpoint (block size 1024)
+        # but want to use a smaller block size for some smaller, simpler model
+        assert block_size <= self.config.block_size
+        self.config.block_size = block_size
+        self.transformer.encoder.wpe.weight = nn.Parameter(self.transformer.encoder.wpe.weight[:block_size])
+        self.transformer.decoder.wpe.weight = nn.Parameter(self.transformer.decoder.wpe.weight[:block_size])
 
     @classmethod
     def from_pretrained(cls, model_type, override_args=None):
