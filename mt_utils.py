@@ -3,6 +3,8 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader, RandomSampler
 import pickle
+import math
+from collections import Counter
 from typing import Tuple, List
 
 
@@ -90,3 +92,88 @@ def build_dataloader(
         pin_memory=True
     )
     return loader
+
+
+def compute_bleu(
+    preds: torch.Tensor,
+    tgt_seq: torch.Tensor,
+    pad_id: int = 50259,
+    eos_id: int = 50258,
+    max_n: int = 4
+) -> float:
+    """
+    计算一个 batch 上的 corpus-level BLEU 分数。
+
+    参数:
+        preds:   LongTensor, shape (B, pred_len)，模型输出 token IDs
+        tgt_seq: LongTensor, shape (B, tgt_len)，参考序列 token IDs
+        pad_id:  int, padding token 的 ID
+        eos_id:  int, EOS token 的 ID
+        max_n:   int, 最大 n-gram 阶数（默认为 4，即 BLEU-4）
+    返回:
+        bleu:    float, corpus-level BLEU 分数
+    """
+    # 转成 Python list 方便处理
+    if isinstance(preds, torch.Tensor):
+        preds = preds.tolist()
+    if isinstance(tgt_seq, torch.Tensor):
+        tgt_seq = tgt_seq.tolist()
+
+    # 累积 n-gram 匹配数和总数
+    total_clipped = [0] * max_n
+    total_counts  = [0] * max_n
+    total_ref_len = 0
+    total_hyp_len = 0
+
+    for hyp_ids, ref_ids in zip(preds, tgt_seq):
+        # 去 EOS（及之后）并过滤掉 PAD
+        if eos_id in hyp_ids:
+            hyp_ids = hyp_ids[: hyp_ids.index(eos_id)]
+        hyp_tokens = [t for t in hyp_ids if t != pad_id]
+
+        ref_ids = ref_ids[: ref_ids.index(eos_id)]
+        ref_tokens = [t for t in ref_ids if t != pad_id]
+
+        total_hyp_len += len(hyp_tokens)
+        total_ref_len += len(ref_tokens)
+
+        # 各级 n-gram 统计
+        for i in range(max_n):
+            n = i + 1
+            hyp_ngrams = Counter(
+                tuple(hyp_tokens[j:j+n]) 
+                for j in range(len(hyp_tokens)-n+1)
+            )
+            ref_ngrams = Counter(
+                tuple(ref_tokens[j:j+n]) 
+                for j in range(len(ref_tokens)-n+1)
+            )
+            clipped = sum(
+                min(count, ref_ngrams.get(ng, 0)) 
+                for ng, count in hyp_ngrams.items()
+            )
+            total_clipped[i] += clipped
+            total_counts[i]  += sum(hyp_ngrams.values())
+
+    # 1–n-gram 精确度
+    precisions = [
+        (total_clipped[i] / total_counts[i]) if total_counts[i] > 0 else 0.0
+        for i in range(max_n)
+    ]
+
+    # 几何平均
+    if min(precisions) == 0.0:
+        geo_mean = 0.0
+    else:
+        log_sum = sum((1.0/max_n) * math.log(p) for p in precisions)
+        geo_mean = math.exp(log_sum)
+
+    # brevity penalty
+    if total_hyp_len == 0:
+        bp = 0.0
+    elif total_hyp_len > total_ref_len:
+        bp = 1.0
+    else:
+        bp = math.exp(1 - total_ref_len/total_hyp_len)
+
+    return bp * geo_mean
